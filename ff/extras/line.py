@@ -1,0 +1,235 @@
+import pandas as pd
+import sys
+sys.path.append('../utils')
+from team_mapping import team_encoding
+
+o_rank_2022 = {
+    1: "CLE",
+    2: "PHI",
+    3: "DET",
+    4: "KC",
+    5: "NE",
+    6: "IND",
+    7: "CIN",
+    8: "LAC",
+    9: "GB",
+    10: "TB",
+    11: "LAR",
+    12: "CAR",
+    13: "DAL",
+    14: "WAS",
+    15: "BAL",
+    16: "SF",
+    17: "NO",
+    18: "DEN",
+    19: "MIN",
+    20: "BUF",
+    21: "NYJ",
+    22: "NYG",
+    23: "MIA",
+    24: "HOU",
+    25: "ARI",
+    26: "PIT",
+    27: "JAX",
+    28: "TEN",
+    29: "SEA",
+    30: "LV",
+    31: "ATL",
+    32: "CHI"
+}
+
+o_rank_2023 =  {
+    1: "BAL",
+    2: "PHI",
+    3: "GB",
+    4: "LAR",
+    5: "SF",
+    6: "CHI",
+    7: "LV",
+    8: "BUF",
+    9: "DET",
+    10: "LAC",
+    11: "ARI",
+    12: "IND",
+    13: "NO",
+    14: "DAL",
+    15: "KC",
+    16: "MIN",
+    17: "CLE",
+    18: "DEN",
+    19: "MIA",
+    20: "ATL",
+    21: "SEA",
+    22: "CIN",
+    23: "WAS",
+    24: "JAX",
+    25: "NE",
+    26: "PIT",
+    27: "HOU",
+    28: "TB",
+    29: "CAR",
+    30: "TEN",
+    31: "NYG",
+    32: "NYJ",
+}
+
+o_rank_2024 = {
+    1: "DET",
+    2: "PHI",
+    3: "IND",
+    4: "CLE",
+    5: "NYJ",
+    6: "ATL",
+    7: "KC",
+    8: "BUF",
+    9: "PIT",
+    10: "DAL",
+    11: "CHI",
+    12: "LAC",
+    13: "MIN",
+    14: "GB",
+    15: "DEN",
+    16: "LAR",
+    17: "TB",
+    18: "MIA",
+    19: "LV",
+    20: "CAR",
+    21: "CIN",
+    22: "HOU",
+    23: "JAX",
+    24: "SF",
+    25: "BAL",
+    26: "ARI",
+    27: "WAS",
+    28: "NYG",
+    29: "SEA",
+    30: "TEN",
+    31: "NO",
+    32: "NE"
+}
+
+d_rank_2022 = {
+    1: "LAR",
+    2: "WAS",
+    3: "GB",
+    4: "PIT",
+    5: "TB",
+    6: "SF",
+    7: "LAC",
+    8: "NO",
+    9: "PHI",
+    10: "TEN",
+    11: "IND",
+    12: "MIN",
+    13: "BUF",
+    14: "CIN",
+    15: "MIA",
+    16: "NYJ",
+    17: "DEN",
+    18: "BAL",
+    19: "LV",
+    20: "CLE",
+    21: "DAL",
+    22: "NYG",
+    23: "NE",
+    24: "CAR",
+    25: "KC",
+    26: "DET",
+    27: "ARI",
+    28: "JAX",
+    29: "SEA",
+    30: "HOU",
+    31: "CHI",
+    32: "ATL"
+}
+
+d_rank_2023 = {
+    1: "CLE",
+    2: "KC",
+    3: "NYJ",
+    4: "CAR",
+    5: "DAL",
+    6: "BAL",
+    7: "NE",
+    8: "SF",
+    9: "BUF",
+    10: "MIA",
+    11: "ATL",
+    12: "CHI",
+    13: "NO",
+    14: "HOU",
+    15: "LV",
+    16: "MIN",
+    17: "GB",
+    18: "TEN",
+    19: "DET",
+    20: "LAR",
+    21: "PIT",
+    22: "JAX",
+    23: "TB",
+    24: "IND",
+    25: "ARI",
+    26: "PHI",
+    27: "NYG",
+    28: "LAC",
+    29: "DEN",
+    30: "SEA",
+    31: "CIN",
+    32: "WAS",
+}
+
+d_rank_2024 = {
+    1: "PHI",
+    2: "TEN",
+    3: "NYJ",
+    4: "HOU",
+    5: "SF",
+    6: "PIT",
+    7: "MIA",
+    8: "KC",
+    9: "DEN",
+    10: "DET",
+    11: "BUF",
+    12: "MIN",
+    13: "LAC",
+    14: "LV",
+    15: "WAS",
+    16: "GB",
+    17: "ARI",
+    18: "SEA",
+    19: "NYG",
+    20: "NE",
+    21: "ATL",
+    22: "CHI",
+    23: "BAL",
+    24: "CLE",
+    25: "LAR",
+    26: "DAL",
+    27: "CIN",
+    28: "TB",
+    29: "IND",
+    30: "NO",
+    31: "CAR",
+    32: "JAX",
+}
+
+def get_line_rank(year):
+    """
+    Fetches and encodes line rankings for a given year. Returns dataframe.
+    """
+    if year < 2022 or year > 2024:
+        raise ValueError("Year not supported. Use 2022, 2023, or 2024.")
+    dict_map = {
+        year: (globals()[f"o_rank_{year}"], globals()[f"d_rank_{year}"])
+        for year in (2022, 2023, 2024)
+    }
+    o_dict, d_dict = dict_map[year]
+    
+    o_df = pd.DataFrame(list(o_dict.items()), columns=["oline_rank", "Team"])
+    d_df = pd.DataFrame(list(d_dict.items()), columns=["dline_rank", "Team"])
+    df = pd.merge(o_df, d_df, on="Team", how="outer")
+    df['Team'] = df['Team'].map(team_encoding)
+    df['year'] = year
+    return df[["year", "Team", "oline_rank", "dline_rank"]]
+
+# get_line_rank(2024).to_csv('out.csv', index=False)

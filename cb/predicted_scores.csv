@@ -1,0 +1,2 @@
+game_id,game_status,home_id,home_rank,home_record,away_id,away_rank,away_record,home_point_spread,home_win,num_ots,is_conference,is_neutral,is_postseason,tournament,game_day,game_time,game_loc,arena,arena_capacity,attendance,tv_network,referee_1,referee_2,referee_3,predicted_home_score,home_team,predicted_away_score,away_team,score_diff
+0,0,0,1.0,0,0,2.0,0,0,0,-1,0,1,1,0,0,0,0,0,,,0,0,0,0,78,Auburn Tigers,65,Michigan State Spartans,13
