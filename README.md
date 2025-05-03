@@ -20,7 +20,7 @@ To ensure everything works smoothly with both your Jupyter notebooks and support
   🛠️ Install with: `pip install virtualenv`
 
 - **Recommended for later:**
-  Required packages for data science and machine learning in notebooks (can just run these in the respective notebooks):  
+  Required packages used in the notebooks and scripts (can just run these in the respective notebooks):  
   🛠️ Install with:  
   ```python
   !pip install nfl-data-py numpy==1.26.4 scipy==1.11.4 scikit-learn==1.4.2 tpot==0.12.2
