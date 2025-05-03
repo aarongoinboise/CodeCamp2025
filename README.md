@@ -4,7 +4,7 @@
 To ensure everything works smoothly with both your Jupyter notebooks and supporting `.py` files, make sure the following are installed:
 
 - **Python 3.x**  
-  Make sure you’re running Python 3 (preferably 3.8 or newer).  
+  Make sure you’re running Python 3 (currently running Python 3.12.3).  
   🛠️ Check with: `python --version`
 
 - **pip**  
