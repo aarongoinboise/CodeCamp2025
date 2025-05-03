@@ -7,6 +7,7 @@ from sklearn.ensemble import RandomForestClassifier
 # Load data
 train_df = pd.read_excel("train.xlsx")
 test_df = pd.read_excel("test.xlsx")
+original_horses = test_df['Horse'].copy()
 
 # Combine for consistent preprocessing
 test_df['KD Place'] = np.nan
@@ -60,5 +61,18 @@ model = RandomForestClassifier(random_state=42)
 model.fit(features, target)
 
 # Predict
-test_processed['KD Place Predicted'] = model.predict(test_processed.drop(columns=['Last Prep/Finish', 'KD Place']))
+X_test = test_processed.drop(columns=['Last Prep/Finish', 'KD Place'])
+preds = model.predict(X_test)
+preds[:] = -1  # Set all to -1
+
+# Get probabilities and pick top 5 most confident predictions
+probs = model.predict_proba(X_test)
+top5_indices = np.argsort(np.max(probs, axis=1))[-5:][::-1]
+
+# Assign labels 1–5
+for label, idx in enumerate(top5_indices, start=1):
+    preds[idx] = label
+
+test_processed['KD Place Predicted'] = preds
+test_processed['Horse'] = original_horses.values
 test_processed[['Horse', 'KD Place Predicted']].to_excel("test_with_predictions.xlsx", index=False)
