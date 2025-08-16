@@ -459,10 +459,6 @@ def main():
     print(f"By player type: {df_final['player_type'].value_counts().to_dict()}")
     print(f"By position: {df_final['position'].value_counts().to_dict()}")
     
-    # Save to CSV
-    df_final.to_csv('fantasy_football_2025_complete_data.csv', index=False)
-    print(f"\n✅ Saved complete data to: fantasy_football_2025_complete_data.csv")
-    
     df_final.drop(columns=[
         'team_color', 'team_color2', 'team_color3', 'team_color4',
         'team_logo_wikipedia', 'team_logo_espn', 'team_wordmark',
@@ -477,12 +473,15 @@ def main():
 
 if __name__ == "__main__":
     fantasy_df = main()
+    # Save to CSV
+    fantasy_df.to_csv('fantasy_football_2025_complete_data.csv', index=False)
+    print(f"\n✅ Saved complete data to: fantasy_football_2025_complete_data.csv")
     
     # Show sample rookie data
     print("\nSample rookie data (2025):")
     rookie_sample = fantasy_df[fantasy_df['season'] == 2025].head()
     if not rookie_sample.empty:
-        print(rookie_sample[['player_display_name', 'position', 'team', 'draft_year', 'fantasy_points_ppr', 'ppg', 'targets', 'carries']].to_string())
+        print(rookie_sample[['player_name', 'position', 'team', 'draft_year', 'fantasy_points_ppr', 'ppg', 'targets', 'carries']].to_string())
     
     print(f"\nColumns in final dataset: {len(fantasy_df.columns)}")
     print("Key columns:", [col for col in fantasy_df.columns if any(x in col.lower() for x in ['fantasy', 'ppg', 'target', 'carry', 'experience', 'draft'])][:10])
