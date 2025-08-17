@@ -3,6 +3,7 @@ import numpy as np
 import nfl_data_py as nfl
 import warnings
 warnings.filterwarnings('ignore')
+import traceback
 
 def get_player_data():
     """Get the core player data we need"""
@@ -26,16 +27,39 @@ def get_player_data():
     # Try to get current rosters for 2025 team assignments
     try:
         print("Getting current roster/team data...")
-        depth_charts = nfl.import_depth_charts([2024])  
-        current_teams = depth_charts.groupby('gsis_id').agg({
+        depth_charts = nfl.import_depth_charts([2025])
+
+        # Keep only skill positions
+        skill_positions = ['QB', 'RB', 'WR', 'TE']
+        skill_players = depth_charts[depth_charts['pos_abb'].isin(skill_positions)].copy()
+        
+        # Team-relative ranking using existing pos_rank
+        skill_players['pos_rank'] = skill_players.groupby(['team', 'pos_abb'])['pos_rank'].rank()
+
+        # Prepare the final output
+        current_teams = skill_players.groupby('gsis_id').agg({
             'team': 'first',
-            'position': 'first',
-            'depth_team': 'first'
+            'player_name': 'first',
+            'espn_id': 'first',
+            'pos_abb': 'first',
+            'pos_rank': 'first',
+            'pos_slot': 'first'
         }).reset_index()
+
         current_teams = current_teams.rename(columns={'gsis_id': 'player_id', 'team': 'current_team_2025'})
-    except:
-        print("Could not get current team data")
+
+        # Select and order columns as needed
+        final_columns = [
+            'player_id', 'current_team_2025', 'player_name', 'espn_id', 
+            'pos_abb', 'pos_rank', 'pos_slot'
+        ]
+        current_teams = current_teams[final_columns]
+        current_teams.to_csv('test.csv', index=False)
+    except Exception as e:
+        print("Could not get current team data:", e)
+        traceback.print_exc()
         current_teams = pd.DataFrame()
+        exit(1)
     
     return seasonal_stats, weekly_data, player_info, current_teams
 
@@ -87,7 +111,6 @@ def get_2025_draft_data():
         {'player_display_name': 'Tetairoa McMillan', 'position': 'WR', 'team': 'CAR', 'round': 1, 'pick': 8, 'college': 'Arizona'},
         {'player_display_name': 'Luther Burden III', 'position': 'WR', 'team': 'NO', 'round': 1, 'pick': 9, 'college': 'Missouri'},
         {'player_display_name': 'Emeka Egbuka', 'position': 'WR', 'team': 'GB', 'round': 1, 'pick': 18, 'college': 'Ohio State'},
-
 
         # Round 1 TEs (2)
         {'player_display_name': 'Colston Loveland', 'position': 'TE', 'team': 'SEA', 'round': 1, 'pick': 16, 'college': 'Michigan'},
@@ -181,38 +204,125 @@ def calculate_consistency_metrics(weekly_data):
     
     return pd.DataFrame(consistency_stats)
 
-def get_college_stats_proxy(draft_data):
-    """Create proxy college stats for rookies based on draft position and position"""
-    print("Creating college stats proxy for rookies...")
+def get_enhanced_rookie_projections(draft_data, historical_rookie_data=None):
+    """
+    Create comprehensive rookie projections based on draft position, position, and historical data
+    """
+    print("Creating enhanced rookie projections...")
     
-    # Position-based fantasy point projections based on historical rookie performance
+    # Enhanced position-based projections with full stat lines
     position_projections = {
         'QB': {
-            'round_1': {'mean_ppg': 12.5, 'std_ppg': 8.2, 'games': 12, 'targets': 0, 'carries': 25, 'receptions': 0},
-            'round_2': {'mean_ppg': 8.5, 'std_ppg': 6.8, 'games': 8, 'targets': 0, 'carries': 15, 'receptions': 0},
-            'round_3+': {'mean_ppg': 4.2, 'std_ppg': 4.5, 'games': 4, 'targets': 0, 'carries': 8, 'receptions': 0}
+            'round_1': {
+                'games': 12, 'fantasy_points_ppr': 150, 'ppg': 12.5,
+                'passing_yards': 2800, 'passing_tds': 18, 'interceptions': 12,
+                'passing_attempts': 450, 'completions': 285, 'sacks': 32,
+                'rushing_yards': 180, 'rushing_tds': 3, 'carries': 45,
+                'targets': 0, 'receptions': 0, 'receiving_yards': 0, 'receiving_tds': 0,
+                'fumbles_lost': 3, 'passing_2pt_conversions': 0
+            },
+            'round_2': {
+                'games': 8, 'fantasy_points_ppr': 68, 'ppg': 8.5,
+                'passing_yards': 1200, 'passing_tds': 8, 'interceptions': 6,
+                'passing_attempts': 200, 'completions': 120, 'sacks': 18,
+                'rushing_yards': 85, 'rushing_tds': 1, 'carries': 22,
+                'targets': 0, 'receptions': 0, 'receiving_yards': 0, 'receiving_tds': 0,
+                'fumbles_lost': 2, 'passing_2pt_conversions': 0
+            },
+            'round_3+': {
+                'games': 4, 'fantasy_points_ppr': 17, 'ppg': 4.2,
+                'passing_yards': 500, 'passing_tds': 3, 'interceptions': 3,
+                'passing_attempts': 85, 'completions': 48, 'sacks': 8,
+                'rushing_yards': 35, 'rushing_tds': 1, 'carries': 12,
+                'targets': 0, 'receptions': 0, 'receiving_yards': 0, 'receiving_tds': 0,
+                'fumbles_lost': 1, 'passing_2pt_conversions': 0
+            }
         },
         'RB': {
-            'round_1': {'mean_ppg': 11.8, 'std_ppg': 6.5, 'games': 14, 'targets': 35, 'carries': 180, 'receptions': 28},
-            'round_2': {'mean_ppg': 8.2, 'std_ppg': 5.8, 'games': 12, 'targets': 25, 'carries': 120, 'receptions': 20},
-            'round_3+': {'mean_ppg': 5.5, 'std_ppg': 4.2, 'games': 10, 'targets': 15, 'carries': 80, 'receptions': 12}
+            'round_1': {
+                'games': 14, 'fantasy_points_ppr': 165, 'ppg': 11.8,
+                'rushing_yards': 850, 'rushing_tds': 6, 'carries': 200,
+                'targets': 45, 'receptions': 32, 'receiving_yards': 280, 'receiving_tds': 2,
+                'fumbles_lost': 2, 'rushing_2pt_conversions': 0, 'receiving_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            },
+            'round_2': {
+                'games': 12, 'fantasy_points_ppr': 98, 'ppg': 8.2,
+                'rushing_yards': 520, 'rushing_tds': 4, 'carries': 135,
+                'targets': 28, 'receptions': 21, 'receiving_yards': 175, 'receiving_tds': 1,
+                'fumbles_lost': 1, 'rushing_2pt_conversions': 0, 'receiving_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            },
+            'round_3+': {
+                'games': 10, 'fantasy_points_ppr': 55, 'ppg': 5.5,
+                'rushing_yards': 320, 'rushing_tds': 2, 'carries': 85,
+                'targets': 18, 'receptions': 13, 'receiving_yards': 110, 'receiving_tds': 1,
+                'fumbles_lost': 1, 'rushing_2pt_conversions': 0, 'receiving_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            }
         },
         'WR': {
-            'round_1': {'mean_ppg': 9.5, 'std_ppg': 5.8, 'games': 15, 'targets': 85, 'carries': 2, 'receptions': 52},
-            'round_2': {'mean_ppg': 6.8, 'std_ppg': 4.5, 'games': 13, 'targets': 65, 'carries': 1, 'receptions': 38},
-            'round_3+': {'mean_ppg': 4.2, 'std_ppg': 3.8, 'games': 11, 'targets': 45, 'carries': 1, 'receptions': 26}
+            'round_1': {
+                'games': 15, 'fantasy_points_ppr': 143, 'ppg': 9.5,
+                'targets': 90, 'receptions': 55, 'receiving_yards': 750, 'receiving_tds': 5,
+                'carries': 3, 'rushing_yards': 25, 'rushing_tds': 0,
+                'fumbles_lost': 1, 'receiving_2pt_conversions': 0, 'rushing_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            },
+            'round_2': {
+                'games': 13, 'fantasy_points_ppr': 88, 'ppg': 6.8,
+                'targets': 70, 'receptions': 40, 'receiving_yards': 520, 'receiving_tds': 3,
+                'carries': 2, 'rushing_yards': 15, 'rushing_tds': 0,
+                'fumbles_lost': 0, 'receiving_2pt_conversions': 0, 'rushing_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            },
+            'round_3+': {
+                'games': 11, 'fantasy_points_ppr': 46, 'ppg': 4.2,
+                'targets': 50, 'receptions': 28, 'receiving_yards': 350, 'receiving_tds': 2,
+                'carries': 1, 'rushing_yards': 8, 'rushing_tds': 0,
+                'fumbles_lost': 0, 'receiving_2pt_conversions': 0, 'rushing_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            }
         },
         'TE': {
-            'round_1': {'mean_ppg': 7.2, 'std_ppg': 4.8, 'games': 14, 'targets': 65, 'carries': 1, 'receptions': 42},
-            'round_2': {'mean_ppg': 4.8, 'std_ppg': 3.5, 'games': 12, 'targets': 45, 'carries': 0, 'receptions': 28},
-            'round_3+': {'mean_ppg': 2.8, 'std_ppg': 2.5, 'games': 10, 'targets': 25, 'carries': 0, 'receptions': 16}
+            'round_1': {
+                'games': 14, 'fantasy_points_ppr': 101, 'ppg': 7.2,
+                'targets': 70, 'receptions': 45, 'receiving_yards': 520, 'receiving_tds': 4,
+                'carries': 1, 'rushing_yards': 5, 'rushing_tds': 0,
+                'fumbles_lost': 0, 'receiving_2pt_conversions': 0, 'rushing_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            },
+            'round_2': {
+                'games': 12, 'fantasy_points_ppr': 58, 'ppg': 4.8,
+                'targets': 50, 'receptions': 30, 'receiving_yards': 350, 'receiving_tds': 2,
+                'carries': 0, 'rushing_yards': 0, 'rushing_tds': 0,
+                'fumbles_lost': 0, 'receiving_2pt_conversions': 0, 'rushing_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            },
+            'round_3+': {
+                'games': 10, 'fantasy_points_ppr': 28, 'ppg': 2.8,
+                'targets': 30, 'receptions': 18, 'receiving_yards': 200, 'receiving_tds': 1,
+                'carries': 0, 'rushing_yards': 0, 'rushing_tds': 0,
+                'fumbles_lost': 0, 'receiving_2pt_conversions': 0, 'rushing_2pt_conversions': 0,
+                'passing_yards': 0, 'passing_tds': 0, 'interceptions': 0,
+                'passing_attempts': 0, 'completions': 0, 'sacks': 0
+            }
         }
     }
     
-    # Apply projections to rookies
+    # Apply projections to each rookie
     for idx, row in draft_data.iterrows():
         pos = row['position']
         round_num = row['round']
+        pick = row['pick']
         
         if pos not in position_projections:
             continue
@@ -225,17 +335,167 @@ def get_college_stats_proxy(draft_data):
         else:
             round_cat = 'round_3+'
             
-        if round_cat in position_projections[pos]:
-            proj = position_projections[pos][round_cat]
+        if round_cat not in position_projections[pos]:
+            continue
             
-            # Apply projections with some randomness
-            for key, value in proj.items():
-                if key in ['mean_ppg', 'std_ppg']:
-                    # Add some variation based on draft position within round
-                    pick_modifier = 1 - (row['pick'] % 32) * 0.01  # Slight adjustment based on pick
-                    draft_data.loc[idx, key] = value * pick_modifier
-                else:
-                    draft_data.loc[idx, key] = value
+        base_projections = position_projections[pos][round_cat].copy()
+        
+        # Apply draft position modifiers
+        # Earlier picks within each round get slight boost
+        if round_num <= 2:
+            pick_in_round = pick - ((round_num - 1) * 32)
+            pick_modifier = 1 + (32 - pick_in_round) * 0.003  # Small boost for earlier picks
+        else:
+            pick_modifier = 0.95 + np.random.uniform(-0.05, 0.1)  # More variation for later picks
+        
+        # Apply team context modifiers (simplified)
+        team_modifiers = get_team_context_modifiers(row.get('team', ''), pos)
+        
+        # Apply all projections
+        for stat, base_value in base_projections.items():
+            if stat in ['games']:
+                # Games don't get modified much
+                final_value = max(1, int(base_value * pick_modifier))
+            elif stat in ['fantasy_points_ppr', 'ppg']:
+                # Fantasy points get full modifiers
+                final_value = base_value * pick_modifier * team_modifiers.get('fantasy_modifier', 1.0)
+            elif 'yards' in stat or 'tds' in stat:
+                # Volume stats get team context
+                final_value = base_value * pick_modifier * team_modifiers.get('volume_modifier', 1.0)
+            elif stat in ['targets', 'carries', 'attempts']:
+                # Opportunity stats
+                final_value = int(base_value * pick_modifier * team_modifiers.get('opportunity_modifier', 1.0))
+            else:
+                # Other stats get basic modifier
+                final_value = base_value * pick_modifier
+            
+            # Set the value
+            if stat in ['games', 'targets', 'carries', 'attempts', 'completions', 'receptions', 'sacks']:
+                draft_data.loc[idx, stat] = max(0, int(final_value))
+            else:
+                draft_data.loc[idx, stat] = max(0, final_value)
+        
+        # Calculate derived stats
+        games = draft_data.loc[idx, 'games']
+        if games > 0:
+            # Per-game stats
+            draft_data.loc[idx, 'targets_per_game'] = draft_data.loc[idx, 'targets'] / games
+            draft_data.loc[idx, 'carries_per_game'] = draft_data.loc[idx, 'carries'] / games
+            
+            # Completion percentage for QBs
+            if pos == 'QB' and draft_data.loc[idx, 'passing_attempts'] > 0:
+                completion_pct = draft_data.loc[idx, 'completions'] / draft_data.loc[idx, 'passing_attempts']
+                draft_data.loc[idx, 'completion_percentage'] = completion_pct
+        
+    return draft_data
+
+def get_team_context_modifiers(team, position):
+    """
+    Get team-specific modifiers based on offensive system and needs
+    This is a simplified version - you could make this much more sophisticated
+    """
+    # High-volume passing offenses
+    pass_heavy_teams = ['BUF', 'KC', 'MIA', 'CIN', 'LAC', 'DET', 'GB', 'DAL', 'PHI']
+    
+    # Run-heavy offenses  
+    run_heavy_teams = ['BAL', 'SF', 'NYJ', 'PIT', 'TEN', 'CLE']
+    
+    # Rookie-friendly situations (good OL, good coaching, etc.)
+    rookie_friendly = ['KC', 'BUF', 'SF', 'DET', 'GB', 'PHI', 'BAL', 'LAC']
+    
+    modifiers = {
+        'fantasy_modifier': 1.0,
+        'volume_modifier': 1.0, 
+        'opportunity_modifier': 1.0
+    }
+    
+    # Position-specific team adjustments
+    if position in ['QB', 'WR']:
+        if team in pass_heavy_teams:
+            modifiers['volume_modifier'] = 1.15
+            modifiers['opportunity_modifier'] = 1.1
+        elif team in run_heavy_teams:
+            modifiers['volume_modifier'] = 0.9
+            modifiers['opportunity_modifier'] = 0.95
+            
+    elif position == 'RB':
+        if team in run_heavy_teams:
+            modifiers['volume_modifier'] = 1.2
+            modifiers['opportunity_modifier'] = 1.15
+        elif team in pass_heavy_teams:
+            modifiers['volume_modifier'] = 0.95
+            modifiers['opportunity_modifier'] = 1.05  # More receiving work
+            
+    elif position == 'TE':
+        if team in pass_heavy_teams:
+            modifiers['volume_modifier'] = 1.1
+            modifiers['opportunity_modifier'] = 1.1
+    
+    # Rookie-friendly boost
+    if team in rookie_friendly:
+        modifiers['fantasy_modifier'] = modifiers.get('fantasy_modifier', 1.0) * 1.05
+    
+    return modifiers
+
+def add_rookie_consistency_estimates(rookies_df):
+    """
+    Add consistency metrics for rookies based on position and draft capital
+    """
+    for idx, row in rookies_df.iterrows():
+        pos = row['position']
+        round_num = row['round']
+        ppg = row.get('ppg', 0)
+        
+        # Consistency varies by position and draft capital
+        if pos == 'QB':
+            if round_num == 1:
+                std_ppg = ppg * 0.65  # QBs are volatile
+                cv = 0.65
+            else:
+                std_ppg = ppg * 0.8
+                cv = 0.8
+        elif pos == 'RB':
+            if round_num == 1:
+                std_ppg = ppg * 0.55  # Top RBs more consistent
+                cv = 0.55
+            else:
+                std_ppg = ppg * 0.7
+                cv = 0.7
+        elif pos == 'WR':
+            std_ppg = ppg * 0.6  # WRs moderately consistent
+            cv = 0.6
+        elif pos == 'TE':
+            std_ppg = ppg * 0.67  # TEs somewhat volatile
+            cv = 0.67
+        else:
+            std_ppg = ppg * 0.7
+            cv = 0.7
+        
+        # Set consistency metrics
+        rookies_df.loc[idx, 'std_ppg'] = std_ppg
+        rookies_df.loc[idx, 'cv'] = cv
+        rookies_df.loc[idx, 'median_ppg'] = ppg * 0.9  # Slightly below mean
+        
+        # Estimate boom/bust games
+        games = row.get('games', 0)
+        if games > 0:
+            rookies_df.loc[idx, 'boom_games'] = max(0, int(games * 0.15))  # 15% boom rate
+            rookies_df.loc[idx, 'bust_games'] = max(0, int(games * 0.25))  # 25% bust rate
+            rookies_df.loc[idx, 'games_over_10'] = max(0, int(games * (ppg/10 * 0.6)))
+            rookies_df.loc[idx, 'games_over_15'] = max(0, int(games * (ppg/15 * 0.4)))
+            rookies_df.loc[idx, 'games_under_5'] = max(0, int(games * 0.3))
+        
+    return rookies_df
+
+def get_college_stats_proxy(draft_data):
+    """Enhanced version that creates comprehensive rookie projections"""
+    print("Creating enhanced college stats proxy for rookies...")
+    
+    # Apply the enhanced projections
+    draft_data = get_enhanced_rookie_projections(draft_data)
+    
+    # Add consistency estimates
+    draft_data = add_rookie_consistency_estimates(draft_data)
     
     return draft_data
 
@@ -306,10 +566,45 @@ def create_comprehensive_dataframe():
     else:
         df = pd.DataFrame()
     
+    print(df.columns)
+    if not current_teams.empty:
+        # Merge current team info with main dataframe
+        df = df.merge(
+            current_teams[['player_id', 'current_team_2025', 'pos_abb', 'pos_rank', 'depth_team']],
+            on='player_id',
+            how='left',
+            suffixes=('', '_current')
+        )
+        
+        # For 2025 data, update recent_team with current_team_2025 if available
+        df.loc[df['season'] == 2025, 'recent_team'] = df.loc[df['season'] == 2025, 'recent_team'].fillna(
+            df.loc[df['season'] == 2025, 'current_team_2025']
+        )
+
+        # Fill missing stats with player's historical averages (across all teams)
+        stat_columns = ['fantasy_points_ppr', 'targets', 'carries', 'ppg', 
+                       'targets_per_game', 'carries_per_game']  # Add more as needed
+        
+        # Calculate each player's historical averages
+        historical_avgs = df[df['season'] < 2025].groupby('player_id')[stat_columns].mean().reset_index()
+        
+        # Merge historical averages for 2025 data
+        df_2025 = df[df['season'] == 2025].copy()
+        if not df_2025.empty:
+            df_2025 = df_2025.merge(historical_avgs, on='player_id', how='left', suffixes=('', '_hist'))
+            
+            # Fill missing 2025 stats with historical averages
+            for stat in stat_columns:
+                df_2025[stat] = df_2025[stat].fillna(df_2025[f'{stat}_hist'])
+                df_2025.drop(columns=[f'{stat}_hist'], inplace=True)
+            
+            # Update the dataframe
+            df = pd.concat([df[df['season'] != 2025], df_2025], ignore_index=True)
+    
     # Add 2025 rookies with projected stats
     rookies_2025 = all_draft_data[all_draft_data['draft_year'] == 2025].copy()
     if not rookies_2025.empty:
-        # Apply college stats proxy
+        # Apply enhanced college stats proxy - this sets ALL the realistic projections
         rookies_2025 = get_college_stats_proxy(rookies_2025)
         
         # Set 2025 season values
@@ -318,31 +613,15 @@ def create_comprehensive_dataframe():
         rookies_2025['is_rookie'] = True
         rookies_2025['player_type'] = 'rookie'
         rookies_2025['player_name'] = rookies_2025['player_display_name']
+        rookies_2025['recent_team'] = rookies_2025['team']
         
-        # Fill missing columns with appropriate defaults
+        # Fill missing columns with appropriate defaults (but DON'T override existing projections!)
         for col in df.columns:
             if col not in rookies_2025.columns:
-                if col in ['fantasy_points_ppr', 'targets', 'carries', 'receptions', 'receiving_yards', 'rushing_yards']:
-                    rookies_2025[col] = 0  # Will be filled by projections
-                else:
-                    rookies_2025[col] = np.nan
+                rookies_2025[col] = np.nan
         
-        # Calculate projected fantasy points based on the proxy stats
-        for idx, row in rookies_2025.iterrows():
-            if pd.notna(row.get('mean_ppg')) and pd.notna(row.get('games')):
-                rookies_2025.loc[idx, 'fantasy_points_ppr'] = row['mean_ppg'] * row['games']
-                rookies_2025.loc[idx, 'ppg'] = row['mean_ppg']
-                
-                # Set other stats
-                if pd.notna(row.get('targets')):
-                    rookies_2025.loc[idx, 'targets'] = row['targets']
-                    rookies_2025.loc[idx, 'targets_per_game'] = row['targets'] / row['games']
-                if pd.notna(row.get('carries')):
-                    rookies_2025.loc[idx, 'carries'] = row['carries']
-                    rookies_2025.loc[idx, 'carries_per_game'] = row['carries'] / row['games']
-                if pd.notna(row.get('receptions')):
-                    rookies_2025.loc[idx, 'receptions'] = row['receptions']
-        
+        # The enhanced projections have already set all the stats we need!
+        print(f"Enhanced projections complete. Sample fantasy points: {rookies_2025['fantasy_points_ppr'].head().tolist()}")
         # Add rookies to main dataframe
         df = pd.concat([df, rookies_2025], ignore_index=True, sort=False)
     
@@ -459,16 +738,26 @@ def main():
     print(f"By player type: {df_final['player_type'].value_counts().to_dict()}")
     print(f"By position: {df_final['position'].value_counts().to_dict()}")
     
-    df_final.drop(columns=[
-        'team_color', 'team_color2', 'team_color3', 'team_color4',
-        'team_logo_wikipedia', 'team_logo_espn', 'team_wordmark',
-        'team_conference_logo', 'team_league_logo', 'team_logo_squared',
-        'team_team_context', 'player_display_name'
-    ], inplace=True)
+    # Clean up columns
+    columns_to_drop = []
+    for col in ['team_color', 'team_color2', 'team_color3', 'team_color4',
+                'team_logo_wikipedia', 'team_logo_espn', 'team_wordmark',
+                'team_conference_logo', 'team_league_logo', 'team_logo_squared',
+                'team_team_context', 'player_display_name']:
+        if col in df_final.columns:
+            columns_to_drop.append(col)
+    
+    if columns_to_drop:
+        df_final = df_final.drop(columns=columns_to_drop)
+    
+    # Reorder columns
     cols = df_final.columns.tolist()
-    cols.remove('player_name')
-    cols.remove('fantasy_points_ppr')
+    if 'player_name' in cols:
+        cols.remove('player_name')
+    if 'fantasy_points_ppr' in cols:
+        cols.remove('fantasy_points_ppr')
     df_final = df_final[['player_name'] + cols + ['fantasy_points_ppr']]
+    
     return df_final
 
 if __name__ == "__main__":
@@ -481,7 +770,9 @@ if __name__ == "__main__":
     print("\nSample rookie data (2025):")
     rookie_sample = fantasy_df[fantasy_df['season'] == 2025].head()
     if not rookie_sample.empty:
-        print(rookie_sample[['player_name', 'position', 'team', 'draft_year', 'fantasy_points_ppr', 'ppg', 'targets', 'carries']].to_string())
+        key_cols = ['player_name', 'position', 'team', 'draft_year', 'fantasy_points_ppr', 'ppg', 'targets', 'carries', 'passing_yards', 'rushing_yards', 'receiving_yards']
+        available_cols = [col for col in key_cols if col in rookie_sample.columns]
+        print(rookie_sample[available_cols].to_string())
     
     print(f"\nColumns in final dataset: {len(fantasy_df.columns)}")
     print("Key columns:", [col for col in fantasy_df.columns if any(x in col.lower() for x in ['fantasy', 'ppg', 'target', 'carry', 'experience', 'draft'])][:10])
