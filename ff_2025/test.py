@@ -221,8 +221,12 @@ def calculate_team_context_score(df, current_teams):
             else:
                 depth_score = 0.4
         else:
-            team = player_data['recent_team'].iloc[0] if 'recent_team' in player_data.columns else 'UNK'
+            team = player_data['recent_team'].iloc[0] if 'recent_team' in player_data.columns else None
             depth_score = 0.7  # Neutral if no depth chart info
+        
+        # Skip players without team assignments (likely retired/unsigned)
+        if pd.isna(team) or team in ['', 'UNK', None]:
+            continue
         
         # Get team tier score
         base_team_score = team_tiers.get(team, 0.6)  # Default to below average if unknown
@@ -275,6 +279,9 @@ def create_fantasy_rankings(df, current_teams):
     rankings_df = rankings_df.merge(injury_scores, on='player_id', how='left')
     rankings_df = rankings_df.merge(consistency_scores, on='player_id', how='left')
     rankings_df = rankings_df.merge(team_context_scores, on='player_id', how='left')
+    
+    # Remove players without team context (likely retired/unsigned)
+    rankings_df = rankings_df[rankings_df['team_context_score'].notna()].copy()
     
     # Fill missing scores with neutral values
     rankings_df['injury_risk_score'] = rankings_df['injury_risk_score'].fillna(0.5)
@@ -456,10 +463,45 @@ def main_rankings(df, current_teams):
         )
     ].copy()
     
-    print(f"Analyzing {len(fantasy_relevant)} fantasy relevant players...")
+    # Get list of players with current teams (active players)
+    active_player_ids = set()
+    if not current_teams.empty:
+        active_player_ids.update(current_teams['player_id'].unique())
+    
+    # Also include rookies (they should have team assignments from draft data)
+    rookie_player_ids = set(fantasy_relevant[fantasy_relevant['player_type'] == 'rookie']['player_id'].unique())
+    active_player_ids.update(rookie_player_ids)
+    
+    # Filter to only active players (have current team or are rookies)
+    fantasy_relevant = fantasy_relevant[
+        fantasy_relevant['player_id'].isin(active_player_ids)
+    ].copy()
+    
+    # Additional check: remove players with no team info and aren't rookies
+    fantasy_relevant = fantasy_relevant[
+        (fantasy_relevant['player_type'] == 'rookie') |  # Keep all rookies
+        (fantasy_relevant['recent_team'].notna()) |      # Keep if has recent team
+        (fantasy_relevant['player_id'].isin(current_teams['player_id'].unique()))  # Keep if in current teams
+    ].copy()
+    
+    print(f"Analyzing {len(fantasy_relevant)} active fantasy relevant players...")
     
     # Generate rankings
     rankings_df = create_fantasy_rankings(fantasy_relevant, current_teams)
+    
+    # Final filter: remove any players without current team assignment
+    rankings_df = rankings_df[
+        (rankings_df['current_team'].notna()) |  # Has current team
+        (rankings_df['player_type'] == 'rookie')  # Or is rookie
+    ].copy()
+    
+    # Remove players with obviously bad team values (like 'UNK' or empty)
+    rankings_df = rankings_df[
+        ~rankings_df['current_team'].isin(['UNK', '', 'nan']) |
+        (rankings_df['player_type'] == 'rookie')
+    ].copy()
+    
+    print(f"Final rankings include {len(rankings_df)} active players")
     
     # Generate tier analysis
     tiers = generate_tier_analysis(rankings_df)
@@ -539,8 +581,7 @@ def get_all_draft_data():
     
     draft_data_list = []
     
-    # Get historical draft data (2021-2024)
-    for year in [2021, 2022, 2023, 2024]:
+    for year in range(2010, 2025):
         try:
             draft_year = nfl.import_draft_picks([year])
             if not draft_year.empty:
