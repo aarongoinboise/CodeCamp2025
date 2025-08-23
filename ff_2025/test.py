@@ -5,6 +5,477 @@ import warnings
 warnings.filterwarnings('ignore')
 import traceback
 
+import pandas as pd
+import numpy as np
+import warnings
+warnings.filterwarnings('ignore')
+
+def calculate_injury_risk_score(df):
+    """
+    Calculate injury risk based on games played patterns and other indicators
+    Lower score = lower injury risk (better)
+    """
+    print("Calculating injury risk scores...")
+    
+    injury_scores = []
+    
+    for player_id in df['player_id'].unique():
+        player_data = df[df['player_id'] == player_id].copy()
+        
+        if len(player_data) == 0:
+            continue
+            
+        # Skip rookies for injury analysis (no history)
+        non_rookie_data = player_data[player_data['player_type'] != 'rookie']
+        
+        if len(non_rookie_data) == 0:
+            # Rookie - assign neutral injury risk
+            injury_score = 0.5
+        else:
+            # Calculate injury indicators
+            games_played = non_rookie_data['games'].fillna(0)
+            seasons_played = len(non_rookie_data)
+            
+            # Games per season average (17 games = perfect availability)
+            avg_games_per_season = games_played.mean() if len(games_played) > 0 else 8
+            availability_rate = avg_games_per_season / 17.0
+            
+            # Consistency of availability (low std = more consistent)
+            games_std = games_played.std() if len(games_played) > 1 else 0
+            consistency_penalty = (games_std / 17.0) * 0.3
+            
+            # Recent injury history (weight recent seasons more)
+            if len(games_played) >= 2:
+                recent_games = games_played.iloc[-2:].mean()  # Last 2 seasons
+                recent_availability = recent_games / 17.0
+            else:
+                recent_availability = availability_rate
+            
+            # Fumbles lost can indicate hits/injury risk
+            fumbles_avg = non_rookie_data['fumbles_lost'].fillna(0).mean()
+            fumble_penalty = min(fumbles_avg * 0.1, 0.2)  # Cap at 0.2
+            
+            # Calculate final injury risk score (0 = no risk, 1 = high risk)
+            injury_score = 1.0 - availability_rate
+            injury_score += consistency_penalty
+            injury_score = (injury_score * 0.7) + (1.0 - recent_availability) * 0.3  # Weight recent more
+            injury_score += fumble_penalty
+            
+            # Cap between 0 and 1
+            injury_score = np.clip(injury_score, 0, 1)
+        
+        injury_scores.append({
+            'player_id': player_id,
+            'injury_risk_score': injury_score,
+            'avg_games_per_season': avg_games_per_season if 'avg_games_per_season' in locals() else 17,
+            'seasons_analyzed': len(non_rookie_data)
+        })
+    
+    return pd.DataFrame(injury_scores)
+
+def calculate_consistency_score(df):
+    """
+    Calculate consistency score - higher is better
+    Focuses on week-to-week consistency rather than boom/bust
+    """
+    print("Calculating consistency scores...")
+    
+    consistency_scores = []
+    
+    for player_id in df['player_id'].unique():
+        player_data = df[df['player_id'] == player_id].copy()
+        
+        if len(player_data) == 0:
+            continue
+            
+        # For rookies, use projected consistency metrics
+        if player_data['player_type'].iloc[0] == 'rookie':
+            # Use rookie projections if available
+            if 'cv' in player_data.columns and not pd.isna(player_data['cv'].iloc[0]):
+                cv = player_data['cv'].iloc[0]
+                consistency_score = 1.0 / (1.0 + cv)  # Lower CV = higher consistency
+            else:
+                # Default rookie consistency by position
+                pos = player_data['position'].iloc[0]
+                pos_consistency = {'QB': 0.6, 'RB': 0.65, 'WR': 0.55, 'TE': 0.5}
+                consistency_score = pos_consistency.get(pos, 0.5)
+        else:
+            # Use historical data for veterans
+            non_rookie_data = player_data[player_data['player_type'] != 'rookie']
+            
+            if len(non_rookie_data) == 0:
+                consistency_score = 0.5
+            else:
+                # Multiple consistency indicators
+                cv_scores = non_rookie_data['cv'].fillna(1.0)  # Lower CV = more consistent
+                std_scores = non_rookie_data['std_ppg'].fillna(10.0)
+                ppg_scores = non_rookie_data['ppg'].fillna(0)
+                
+                # Coefficient of variation (lower = more consistent)
+                avg_cv = cv_scores.mean()
+                cv_consistency = 1.0 / (1.0 + avg_cv)
+                
+                # Boom/bust ratio
+                boom_games = non_rookie_data['boom_games'].fillna(0).mean()
+                bust_games = non_rookie_data['bust_games'].fillna(0).mean()
+                total_games = non_rookie_data['games'].fillna(1).mean()
+                
+                if total_games > 0:
+                    boom_rate = boom_games / total_games
+                    bust_rate = bust_games / total_games
+                    # Prefer low bust rate over high boom rate
+                    boom_bust_score = 1.0 - (bust_rate * 0.7) + (boom_rate * 0.2)
+                else:
+                    boom_bust_score = 0.5
+                
+                # Games with decent production
+                if 'games_over_10' in non_rookie_data.columns:
+                    solid_games = non_rookie_data['games_over_10'].fillna(0).mean()
+                    solid_rate = solid_games / total_games if total_games > 0 else 0
+                else:
+                    solid_rate = 0.5
+                
+                # Combine consistency metrics
+                consistency_score = (cv_consistency * 0.4 + 
+                                   boom_bust_score * 0.4 + 
+                                   solid_rate * 0.2)
+                
+                # Cap between 0 and 1
+                consistency_score = np.clip(consistency_score, 0, 1)
+        
+        consistency_scores.append({
+            'player_id': player_id,
+            'consistency_score': consistency_score
+        })
+    
+    return pd.DataFrame(consistency_scores)
+
+def get_positional_scarcity_adjustments():
+    """
+    Define positional scarcity multipliers based on typical fantasy league needs
+    """
+    return {
+        'QB': 0.85,  # Less valuable, most teams only start 1
+        'RB': 1.4,   # Most scarce, teams start 2+ and injuries common
+        'WR': 1.2,   # High volume, teams start 2-3+
+        'TE': 0.9    # Only elite TEs are worth early picks, big dropoff
+    }
+
+def calculate_team_context_score(df, current_teams):
+    """
+    Score players based on their team context for fantasy production
+    """
+    print("Calculating team context scores...")
+    
+    # Define team tiers based on offensive quality and opportunity
+    # This should be updated based on 2025 expectations
+    team_tiers = {
+        # Tier 1: Elite offenses, great for fantasy
+        'KC': 1.0, 'BUF': 1.0, 'SF': 0.95, 'DAL': 0.95, 'MIA': 0.95,
+        
+        # Tier 2: Good offenses
+        'PHI': 0.9, 'CIN': 0.9, 'DET': 0.9, 'LAC': 0.85, 'GB': 0.85,
+        'BAL': 0.85, 'HOU': 0.8, 'JAX': 0.8,
+        
+        # Tier 3: Average offenses  
+        'ATL': 0.75, 'TB': 0.75, 'MIN': 0.75, 'SEA': 0.75, 'LAR': 0.75,
+        'IND': 0.7, 'PIT': 0.7, 'DEN': 0.7,
+        
+        # Tier 4: Below average
+        'LV': 0.6, 'NYJ': 0.65, 'TEN': 0.65, 'ARI': 0.6, 'CHI': 0.6,
+        'WAS': 0.65, 'CLE': 0.6, 'NO': 0.6,
+        
+        # Tier 5: Concerning offenses
+        'CAR': 0.5, 'NYG': 0.5, 'NE': 0.55
+    }
+    
+    # Position-specific team adjustments
+    position_team_bonuses = {
+        'TE': {
+            'KC': 0.2,   # Kelce history
+            'SF': 0.15,  # Kittle usage
+            'BAL': 0.1,  # Andrews usage
+            'LV': -0.1,  # Weaker offense for TEs
+            'ARI': -0.05, 'CAR': -0.1, 'NYG': -0.1
+        }
+    }
+    
+    team_scores = []
+    
+    for player_id in df['player_id'].unique():
+        player_data = df[df['player_id'] == player_id].copy()
+        
+        # Get current team from current_teams df or recent_team
+        current_team_info = current_teams[current_teams['player_id'] == player_id]
+        
+        if not current_team_info.empty:
+            team = current_team_info['current_team_2025'].iloc[0]
+            depth_rank = current_team_info['pos_rank'].iloc[0]
+            # Better depth chart penalty
+            if depth_rank <= 1:
+                depth_score = 1.0
+            elif depth_rank <= 2:
+                depth_score = 0.8
+            elif depth_rank <= 3:
+                depth_score = 0.6
+            else:
+                depth_score = 0.4
+        else:
+            team = player_data['recent_team'].iloc[0] if 'recent_team' in player_data.columns else 'UNK'
+            depth_score = 0.7  # Neutral if no depth chart info
+        
+        # Get team tier score
+        base_team_score = team_tiers.get(team, 0.6)  # Default to below average if unknown
+        
+        # Apply position-specific bonuses/penalties
+        position = player_data['position'].iloc[0]
+        position_bonus = position_team_bonuses.get(position, {}).get(team, 0)
+        team_tier_score = base_team_score + position_bonus
+        
+        # Combine team quality and depth chart position
+        team_context_score = (team_tier_score * 0.7) + (depth_score * 0.3)
+        
+        team_scores.append({
+            'player_id': player_id,
+            'team_context_score': team_context_score,
+            'current_team': team,
+            'depth_chart_rank': current_team_info['pos_rank'].iloc[0] if not current_team_info.empty else None
+        })
+    
+    return pd.DataFrame(team_scores)
+
+def create_fantasy_rankings(df, current_teams):
+    """
+    Create comprehensive fantasy draft rankings
+    """
+    print("Creating fantasy draft rankings...")
+    
+    # Get latest season data for each player (2025 for rookies, most recent for veterans)
+    latest_data = []
+    
+    for player_id in df['player_id'].unique():
+        player_data = df[df['player_id'] == player_id].copy()
+        
+        # For rookies, use 2025 data; for others, use most recent season
+        if (player_data['player_type'] == 'rookie').any():
+            latest = player_data[player_data['season'] == 2025].iloc[0] if len(player_data[player_data['season'] == 2025]) > 0 else player_data.iloc[-1]
+        else:
+            latest = player_data.loc[player_data['season'].idxmax()]
+        
+        latest_data.append(latest)
+    
+    rankings_df = pd.DataFrame(latest_data)
+    
+    # Calculate component scores
+    injury_scores = calculate_injury_risk_score(df)
+    consistency_scores = calculate_consistency_score(df)
+    team_context_scores = calculate_team_context_score(df, current_teams)
+    
+    # Merge all scores
+    rankings_df = rankings_df.merge(injury_scores, on='player_id', how='left')
+    rankings_df = rankings_df.merge(consistency_scores, on='player_id', how='left')
+    rankings_df = rankings_df.merge(team_context_scores, on='player_id', how='left')
+    
+    # Fill missing scores with neutral values
+    rankings_df['injury_risk_score'] = rankings_df['injury_risk_score'].fillna(0.5)
+    rankings_df['consistency_score'] = rankings_df['consistency_score'].fillna(0.5)
+    rankings_df['team_context_score'] = rankings_df['team_context_score'].fillna(0.6)
+    
+    # Handle missing fantasy points (especially for rookies)
+    rankings_df['fantasy_points_ppr'] = rankings_df['fantasy_points_ppr'].fillna(0)
+    rankings_df['ppg'] = rankings_df['ppg'].fillna(0)
+    
+    # For players with 0 fantasy points, use projected values if available
+    zero_points_mask = rankings_df['fantasy_points_ppr'] == 0
+    if 'projected_fantasy_points' in rankings_df.columns:
+        rankings_df.loc[zero_points_mask, 'fantasy_points_ppr'] = rankings_df.loc[zero_points_mask, 'projected_fantasy_points'].fillna(0)
+    
+    # Calculate base fantasy value (normalize by position)
+    position_medians = rankings_df.groupby('position')['fantasy_points_ppr'].median()
+    rankings_df['position_adjusted_points'] = rankings_df.apply(
+        lambda x: x['fantasy_points_ppr'] / position_medians.get(x['position'], 1) if position_medians.get(x['position'], 1) > 0 else 0, 
+        axis=1
+    )
+    
+    # Apply TE penalty - only top TEs should rank highly
+    te_penalty_threshold = rankings_df[rankings_df['position'] == 'TE']['fantasy_points_ppr'].quantile(0.8)
+    rankings_df.loc[
+        (rankings_df['position'] == 'TE') & 
+        (rankings_df['fantasy_points_ppr'] < te_penalty_threshold), 
+        'position_adjusted_points'
+    ] *= 0.6  # Heavy penalty for mid-tier TEs
+    
+    # Apply positional scarcity
+    scarcity_adj = get_positional_scarcity_adjustments()
+    rankings_df['scarcity_multiplier'] = rankings_df['position'].map(scarcity_adj)
+    
+    # Calculate final composite score
+    # Weights: Production (45%), Consistency (25%), Health (20%), Team Context (10%)
+    rankings_df['base_score'] = rankings_df['position_adjusted_points'] * rankings_df['scarcity_multiplier']
+    
+    rankings_df['composite_score'] = (
+        rankings_df['base_score'] * 0.45 +
+        rankings_df['consistency_score'] * 0.25 +
+        (1 - rankings_df['injury_risk_score']) * 0.20 +  # Flip injury risk (lower risk = higher score)
+        rankings_df['team_context_score'] * 0.10
+    )
+    
+    # Create positional rankings
+    rankings_df['overall_rank'] = rankings_df['composite_score'].rank(method='dense', ascending=False)
+    rankings_df['position_rank'] = rankings_df.groupby('position')['composite_score'].rank(method='dense', ascending=False)
+    
+    # Select and order columns for output
+    output_columns = [
+        'overall_rank', 'position_rank', 'player_name', 'position', 'current_team',
+        'player_type', 'fantasy_points_ppr', 'ppg', 'composite_score',
+        'consistency_score', 'injury_risk_score', 'team_context_score',
+        'avg_games_per_season', 'depth_chart_rank'
+    ]
+    
+    # Add available columns
+    final_columns = [col for col in output_columns if col in rankings_df.columns]
+    rankings_df = rankings_df[final_columns].copy()
+    
+    # Sort by overall rank
+    rankings_df = rankings_df.sort_values('overall_rank').reset_index(drop=True)
+    
+    return rankings_df
+
+def generate_tier_analysis(rankings_df):
+    """
+    Generate tier analysis for each position
+    """
+    print("Generating tier analysis...")
+    
+    tiers = {}
+    
+    for position in ['QB', 'RB', 'WR', 'TE']:
+        pos_players = rankings_df[rankings_df['position'] == position].copy()
+        
+        if len(pos_players) == 0:
+            continue
+        
+        # Create tiers based on composite score gaps
+        scores = pos_players['composite_score'].values
+        score_diffs = np.diff(scores)
+        
+        # Find natural breakpoints (large drops in score)
+        if len(score_diffs) > 0:
+            percentile_80 = np.percentile(np.abs(score_diffs), 80)
+            tier_breaks = np.where(np.abs(score_diffs) > percentile_80)[0] + 1
+        else:
+            tier_breaks = []
+        
+        # Add tier 1 start and end
+        tier_breaks = np.concatenate(([0], tier_breaks, [len(pos_players)]))
+        tier_breaks = np.unique(tier_breaks)
+        
+        pos_tiers = {}
+        for i in range(len(tier_breaks) - 1):
+            start_idx = tier_breaks[i]
+            end_idx = tier_breaks[i + 1]
+            tier_players = pos_players.iloc[start_idx:end_idx]
+            
+            pos_tiers[f'Tier {i + 1}'] = {
+                'players': tier_players['player_name'].tolist(),
+                'rank_range': f"{int(tier_players['position_rank'].min())}-{int(tier_players['position_rank'].max())}",
+                'avg_score': tier_players['composite_score'].mean(),
+                'count': len(tier_players)
+            }
+            
+            # Limit to top 5 tiers
+            if i >= 4:
+                break
+        
+        tiers[position] = pos_tiers
+    
+    return tiers
+
+def print_rankings_summary(rankings_df, tiers, top_n=200):
+    """
+    Print a nice summary of the rankings
+    """
+    print(f"\n🏈 FANTASY FOOTBALL DRAFT RANKINGS (Top {top_n})")
+    print("=" * 80)
+    print("Methodology: Prioritizes consistency and health over boom/bust players")
+    print("Weights: Production (40%), Consistency (30%), Health (20%), Team Context (10%)")
+    print("=" * 80)
+    
+    # Overall top players
+    print(f"\n📊 OVERALL TOP {min(top_n, len(rankings_df))}:")
+    top_players = rankings_df.head(top_n)
+    
+    print(f"{'Rank':<4} {'Name':<25} {'Pos':<3} {'Team':<4} {'Type':<8} {'PPG':<6} {'Score':<6} {'Health':<7} {'Consistency':<11}")
+    print("-" * 80)
+    
+    for _, player in top_players.iterrows():
+        health_grade = 'A' if player['injury_risk_score'] < 0.3 else 'B' if player['injury_risk_score'] < 0.6 else 'C'
+        consistency_grade = 'A' if player['consistency_score'] > 0.7 else 'B' if player['consistency_score'] > 0.5 else 'C'
+        
+        print(f"{int(player['overall_rank']):<4} {str(player['player_name'])[:24]:<25} "
+              f"{player['position']:<3} {str(player.get('current_team', 'UNK')):<4} "
+              f"{str(player['player_type'])[:8]:<8} {player['ppg']:<6.1f} "
+              f"{player['composite_score']:<6.2f} {health_grade:<7} {consistency_grade:<11}")
+    
+    # Position breakdowns
+    for position in ['QB', 'RB', 'WR', 'TE']:
+        print(f"\n📈 {position} TIERS:")
+        if position in tiers:
+            for tier_name, tier_data in tiers[position].items():
+                player_list = ", ".join(tier_data['players'][:8])  # Show first 8 players
+                if len(tier_data['players']) > 8:
+                    player_list += f"... (+{len(tier_data['players']) - 8} more)"
+                
+                print(f"  {tier_name} (Ranks {tier_data['rank_range']}): {player_list}")
+        
+        # Top 12 for this position
+        pos_top = rankings_df[rankings_df['position'] == position].head(12)
+        print(f"\n  Top 12 {position}s:")
+        for _, player in pos_top.iterrows():
+            consistency_indicator = "🟢" if player['consistency_score'] > 0.7 else "🟡" if player['consistency_score'] > 0.5 else "🔴"
+            health_indicator = "💪" if player['injury_risk_score'] < 0.3 else "⚠️" if player['injury_risk_score'] > 0.6 else "✅"
+            
+            print(f"    {int(player['position_rank']):2}. {player['player_name']:<20} ({player.get('current_team', 'UNK')}) "
+                  f"{player['ppg']:5.1f} PPG {consistency_indicator}{health_indicator}")
+
+def main_rankings(df, current_teams):
+    """
+    Main function to generate and display rankings
+    """
+    print("🚀 Starting Fantasy Football Draft Rankings Generation...")
+    print("=" * 60)
+    
+    # Filter to fantasy relevant players only
+    fantasy_relevant = df[
+        (df['position'].isin(['QB', 'RB', 'WR', 'TE'])) &
+        (
+            (df['fantasy_points_ppr'] > 0) |  # Has production
+            (df['player_type'] == 'rookie') |  # Or is a rookie
+            (df['targets'].fillna(0) >= 10) |  # Or has opportunity
+            (df['carries'].fillna(0) >= 20)
+        )
+    ].copy()
+    
+    print(f"Analyzing {len(fantasy_relevant)} fantasy relevant players...")
+    
+    # Generate rankings
+    rankings_df = create_fantasy_rankings(fantasy_relevant, current_teams)
+    
+    # Generate tier analysis
+    tiers = generate_tier_analysis(rankings_df)
+    
+    # Print summary
+    print_rankings_summary(rankings_df, tiers, top_n=150)
+    
+    # Save to CSV
+    rankings_df.to_csv('fantasy_draft_rankings_2025.csv', index=False)
+    print(f"\n✅ Rankings saved to: fantasy_draft_rankings_2025.csv")
+    
+    return rankings_df, tiers
+
+# Usage example:
+# rankings, tiers = main_rankings(df, current_teams)
+
 def get_player_data():
     """Get the core player data we need"""
     print("Fetching player data...")
@@ -60,7 +531,6 @@ def get_player_data():
         traceback.print_exc()
         current_teams = pd.DataFrame()
         exit(1)
-    
     return seasonal_stats, weekly_data, player_info, current_teams
 
 def get_all_draft_data():
@@ -530,11 +1000,14 @@ def create_comprehensive_dataframe():
         
         # Merge consistency metrics for this season
         season_consistency = consistency_df[consistency_df['season'] == year]
-        season_df = season_df.merge(season_consistency, on='player_id', how='left')
+        season_df = season_df.merge(season_consistency, on='player_id', how='left', suffixes=('', '_consistency'))
         
-        # Add draft information
+        # Add draft information - be explicit about suffixes to avoid conflicts
         if not all_draft_data.empty:
-            season_df = season_df.merge(all_draft_data, on='player_id', how='left', suffixes=('', '_draft'))
+            # Drop any season column from draft data if it exists to avoid conflicts
+            draft_cols_to_merge = [col for col in all_draft_data.columns if col != 'season']
+            draft_data_clean = all_draft_data[draft_cols_to_merge].copy()
+            season_df = season_df.merge(draft_data_clean, on='player_id', how='left', suffixes=('', '_draft'))
         
         # Calculate years of experience
         season_df['years_experience'] = year - season_df['draft_year'].fillna(year - 3)  # Assume 3 years if no draft data
@@ -551,12 +1024,21 @@ def create_comprehensive_dataframe():
         season_df['targets_per_game'] = season_df['targets'] / season_df['games'].clip(lower=1)
         season_df['carries_per_game'] = season_df['carries'] / season_df['games'].clip(lower=1)
         
-        # Add team context
+        # Add team context - avoid column conflicts
         team_col = 'recent_team'
         if not team_context.empty and team_col in season_df.columns:
             merge_col = 'team_abbr' if 'team_abbr' in team_context.columns else 'team'
-            season_df = season_df.merge(team_context, left_on=team_col, right_on=merge_col, 
-                                      how='left', suffixes=('', '_team_context'))
+            # Only select necessary columns from team_context to avoid conflicts
+            team_context_cols = ['team_abbr'] if 'team_abbr' in team_context.columns else ['team']
+            team_context_cols += [col for col in team_context.columns if col.startswith('team_') and col not in team_context_cols]
+            
+            season_df = season_df.merge(
+                team_context[team_context_cols], 
+                left_on=team_col, 
+                right_on=merge_col, 
+                how='left', 
+                suffixes=('', '_team_context')
+            )
         
         all_seasons_data.append(season_df)
     
@@ -566,40 +1048,49 @@ def create_comprehensive_dataframe():
     else:
         df = pd.DataFrame()
     
-    print(df.columns)
+    # Fix any column naming issues from merges
+    if 'season_x' in df.columns and 'season' not in df.columns:
+        df = df.rename(columns={'season_x': 'season'})
+    if 'season_y' in df.columns:
+        df = df.drop(columns=['season_y'])
+    
+    print("Columns after initial merge:", df.columns.tolist()[:20])  # Debug print
+    
     if not current_teams.empty:
         # Merge current team info with main dataframe
         df = df.merge(
-            current_teams[['player_id', 'current_team_2025', 'pos_abb', 'pos_rank', 'depth_team']],
+            current_teams[['player_id', 'current_team_2025', 'pos_abb', 'pos_rank', 'pos_slot']],
             on='player_id',
             how='left',
             suffixes=('', '_current')
         )
         
         # For 2025 data, update recent_team with current_team_2025 if available
-        df.loc[df['season'] == 2025, 'recent_team'] = df.loc[df['season'] == 2025, 'recent_team'].fillna(
-            df.loc[df['season'] == 2025, 'current_team_2025']
-        )
+        if 'season' in df.columns:  # Make sure season column exists
+            df.loc[df['season'] == 2025, 'recent_team'] = df.loc[df['season'] == 2025, 'recent_team'].fillna(
+                df.loc[df['season'] == 2025, 'current_team_2025']
+            )
 
-        # Fill missing stats with player's historical averages (across all teams)
-        stat_columns = ['fantasy_points_ppr', 'targets', 'carries', 'ppg', 
-                       'targets_per_game', 'carries_per_game']  # Add more as needed
-        
-        # Calculate each player's historical averages
-        historical_avgs = df[df['season'] < 2025].groupby('player_id')[stat_columns].mean().reset_index()
-        
-        # Merge historical averages for 2025 data
-        df_2025 = df[df['season'] == 2025].copy()
-        if not df_2025.empty:
-            df_2025 = df_2025.merge(historical_avgs, on='player_id', how='left', suffixes=('', '_hist'))
+            # Fill missing stats with player's historical averages (across all teams)
+            stat_columns = ['fantasy_points_ppr', 'targets', 'carries', 'ppg', 
+                           'targets_per_game', 'carries_per_game']  # Add more as needed
             
-            # Fill missing 2025 stats with historical averages
-            for stat in stat_columns:
-                df_2025[stat] = df_2025[stat].fillna(df_2025[f'{stat}_hist'])
-                df_2025.drop(columns=[f'{stat}_hist'], inplace=True)
+            # Calculate each player's historical averages
+            historical_avgs = df[df['season'] < 2025].groupby('player_id')[stat_columns].mean().reset_index()
             
-            # Update the dataframe
-            df = pd.concat([df[df['season'] != 2025], df_2025], ignore_index=True)
+            # Merge historical averages for 2025 data
+            df_2025 = df[df['season'] == 2025].copy()
+            if not df_2025.empty:
+                df_2025 = df_2025.merge(historical_avgs, on='player_id', how='left', suffixes=('', '_hist'))
+                
+                # Fill missing 2025 stats with historical averages
+                for stat in stat_columns:
+                    if f'{stat}_hist' in df_2025.columns:
+                        df_2025[stat] = df_2025[stat].fillna(df_2025[f'{stat}_hist'])
+                        df_2025 = df_2025.drop(columns=[f'{stat}_hist'])
+                
+                # Update the dataframe
+                df = pd.concat([df[df['season'] != 2025], df_2025], ignore_index=True)
     
     # Add 2025 rookies with projected stats
     rookies_2025 = all_draft_data[all_draft_data['draft_year'] == 2025].copy()
@@ -624,6 +1115,12 @@ def create_comprehensive_dataframe():
         print(f"Enhanced projections complete. Sample fantasy points: {rookies_2025['fantasy_points_ppr'].head().tolist()}")
         # Add rookies to main dataframe
         df = pd.concat([df, rookies_2025], ignore_index=True, sort=False)
+    
+    # Final column cleanup - remove any remaining duplicate season columns
+    duplicate_cols = [col for col in df.columns if col.endswith('_x') or col.endswith('_y')]
+    if duplicate_cols:
+        print(f"Dropping duplicate columns: {duplicate_cols}")
+        df = df.drop(columns=duplicate_cols)
     
     return df
 
@@ -717,10 +1214,14 @@ def add_advanced_features(df):
     
     return df
 
+
 def main():
     """Main function to generate and save the data"""
     print("Starting Enhanced Fantasy Football Data Collection...")
     print("="*60)
+    
+    # Get the raw data (we'll need current_teams for rankings)
+    seasonal_stats, weekly_data, player_info, current_teams = get_player_data()
     
     # Create the comprehensive dataframe
     df = create_comprehensive_dataframe()
@@ -758,10 +1259,11 @@ def main():
         cols.remove('fantasy_points_ppr')
     df_final = df_final[['player_name'] + cols + ['fantasy_points_ppr']]
     
-    return df_final
+    return df_final, current_teams
 
 if __name__ == "__main__":
-    fantasy_df = main()
+    fantasy_df, current_teams = main()
+    
     # Save to CSV
     fantasy_df.to_csv('fantasy_football_2025_complete_data.csv', index=False)
     print(f"\n✅ Saved complete data to: fantasy_football_2025_complete_data.csv")
@@ -776,3 +1278,66 @@ if __name__ == "__main__":
     
     print(f"\nColumns in final dataset: {len(fantasy_df.columns)}")
     print("Key columns:", [col for col in fantasy_df.columns if any(x in col.lower() for x in ['fantasy', 'ppg', 'target', 'carry', 'experience', 'draft'])][:10])
+    
+    # Generate draft rankings using the current_teams data we already have
+    print("\n" + "="*60)
+    print("GENERATING FANTASY DRAFT RANKINGS...")
+    print("="*60)
+    
+    try:
+        # Generate draft rankings
+        rankings, tiers = main_rankings(fantasy_df, current_teams)
+        
+        # Show some key insights
+        print("\n🎯 KEY INSIGHTS:")
+        print("-" * 40)
+        
+        # Top rookies
+        top_rookies = rankings[rankings['player_type'] == 'rookie'].head(10)
+        if not top_rookies.empty:
+            print(f"\n📈 Top 10 Rookies:")
+            for _, rookie in top_rookies.iterrows():
+                consistency = "High" if rookie['consistency_score'] > 0.6 else "Medium" if rookie['consistency_score'] > 0.4 else "Low"
+                health = "Excellent" if rookie['injury_risk_score'] < 0.4 else "Good" if rookie['injury_risk_score'] < 0.6 else "Concerning"
+                print(f"  {int(rookie['overall_rank']):3}. {rookie['player_name']:<20} {rookie['position']:<2} ({rookie.get('current_team', 'UNK')}) - Consistency: {consistency}, Health: {health}")
+        
+        # Most consistent veterans
+        consistent_vets = rankings[
+            (rankings['player_type'] == 'veteran') & 
+            (rankings['consistency_score'] > 0.7)
+        ].head(15)
+        
+        if not consistent_vets.empty:
+            print(f"\n🎯 Most Consistent Veterans (Consistency Score > 0.7):")
+            for _, vet in consistent_vets.iterrows():
+                games_avg = vet.get('avg_games_per_season', 'N/A')
+                print(f"  {int(vet['overall_rank']):3}. {vet['player_name']:<20} {vet['position']:<2} ({vet.get('current_team', 'UNK')}) - {games_avg:.1f} games/yr avg")
+        
+        # Injury concerns
+        injury_concerns = rankings[rankings['injury_risk_score'] > 0.7].head(10)
+        if not injury_concerns.empty:
+            print(f"\n⚠️  Injury Risk Concerns (Risk Score > 0.7):")
+            for _, player in injury_concerns.iterrows():
+                games_avg = player.get('avg_games_per_season', 'N/A')
+                print(f"  {int(player['overall_rank']):3}. {player['player_name']:<20} {player['position']:<2} - {games_avg:.1f} games/yr avg")
+        
+        # Value picks (good players ranked lower due to injury/consistency concerns)
+        potential_values = rankings[
+            (rankings['fantasy_points_ppr'] > rankings['fantasy_points_ppr'].quantile(0.7)) &
+            (rankings['overall_rank'] > 50)
+        ].head(10)
+        
+        if not potential_values.empty:
+            print(f"\n💎 Potential Value Picks (High Production, Lower Rank due to Risk):")
+            for _, player in potential_values.iterrows():
+                risk_reason = "Injury Risk" if player['injury_risk_score'] > 0.6 else "Inconsistency" if player['consistency_score'] < 0.5 else "Team Context"
+                print(f"  {int(player['overall_rank']):3}. {player['player_name']:<20} {player['position']:<2} - {player['ppg']:.1f} PPG (Risk: {risk_reason})")
+        
+        print(f"\n✅ Complete rankings saved to: fantasy_draft_rankings_2025.csv")
+        print(f"✅ Use this for your draft preparation!")
+        
+    except Exception as e:
+        print(f"\n❌ Error generating rankings: {e}")
+        print("Check that all required functions are defined and current_teams data is valid.")
+        import traceback
+        traceback.print_exc()
